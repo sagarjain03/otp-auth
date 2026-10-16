@@ -1,6 +1,6 @@
 // TEMPORARY: only mounted when DEBUG_IP=true. Used once after deploy to measure the
 // proxy chain (Vercel -> Render -> Express) and pick the right TRUST_PROXY value.
-// Remove this file and its 3 lines in index.js once TRUST_PROXY is set.
+// Remove this file and the DEBUG_IP block in index.js once TRUST_PROXY is set.
 const express = require("express");
 
 const router = express.Router();

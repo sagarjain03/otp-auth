@@ -2,8 +2,8 @@
 
 Passwordless login and signup with a one-time code sent by email. There are no passwords anywhere: you enter your email, receive a 6-digit code, enter it, and you're in. The same flow creates an account the first time.
 
-**Live demo:** `https://<your-app>.vercel.app` _(placeholder)_
-**API:** `https://<your-api>.onrender.com/api/health` _(placeholder)_
+**Live demo:** https://otp-auth-omega.vercel.app/login
+**API health check:** https://otp-auth-lzex.onrender.com/api/health
 
 > The API runs on Render's free tier and sleeps when idle. The **first request can take about 50 seconds**. If the login page loads slowly, wait a moment and try again.
 
@@ -22,8 +22,13 @@ Passwordless login and signup with a one-time code sent by email. There are no p
 
 ## Architecture
 
-```
-Browser ──> Next.js (client/, :3000) ──rewrite /api/*──> Express (server/, :5000) ──> MongoDB
+```mermaid
+flowchart LR
+    B["Browser"] -->|"pages + /api/*"| N["Next.js<br/>client/ (Vercel, :3000)"]
+    N -->|"rewrite /api/* to API_URL"| E["Express API<br/>server/ (Render, :5000)"]
+    E --> M[("MongoDB<br/>users, otps")]
+    E -->|"send code"| P["Email provider<br/>Gmail (dev) / Brevo (prod)"]
+    P -.->|"6-digit code"| U["User's inbox"]
 ```
 
 - The browser only ever talks to the Next.js app. `client/next.config.mjs` **rewrites** every `/api/*` request to Express (`API_URL`, default `http://localhost:5000`).
@@ -46,11 +51,111 @@ otp-auth/
 └── package.json             runs both apps with one command
 ```
 
-### Login flow
+## How it works
 
-1. User enters an email → `POST /api/auth/send-otp`. The server creates a 6-digit code with `crypto.randomInt`, stores only its **bcrypt hash** with a 5-minute expiry, and emails the code.
-2. User enters the code → `POST /api/auth/verify-otp`. If it matches, the OTP is deleted, the user is created (signup) or `lastLoginAt` is updated (login), and a 7-day JWT is set as an httpOnly cookie.
-3. If the user has no name yet, the frontend sends them to `/complete-profile`. Otherwise it sends them to `/dashboard`.
+### Login / signup flow
+
+One flow handles both login and signup. The server decides whether the email is new.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant C as Next.js (browser)
+    participant S as Express API
+    participant DB as MongoDB
+    participant Mail as Email provider
+
+    U->>C: Enter email on /login
+    C->>S: POST /api/auth/send-otp { email }
+    S->>S: Normalize email, check rate limits, cooldown, lock
+    S->>S: Generate 6-digit code (crypto.randomInt)
+    S->>DB: Save bcrypt hash + expiry (5 min), attempts = 0
+    S->>Mail: Send code
+    Mail-->>U: Email with the code
+    S-->>C: 200 "OTP sent to your email"
+    C->>C: Go to /verify?email=...
+
+    U->>C: Enter 6-digit code
+    C->>S: POST /api/auth/verify-otp { email, otp }
+    S->>DB: Find OTP, use up one attempt, compare hash
+    alt code is correct
+        S->>DB: Delete OTP (one-time use)
+        S->>DB: Create user (signup) or update lastLoginAt (login)
+        S-->>C: 200 { user, isNewUser } + Set-Cookie: token (httpOnly JWT, 7 days)
+        C->>C: Go to /complete-profile if no name yet, else /dashboard
+    else wrong, expired or locked
+        S-->>C: 400 "Invalid or expired OTP" or 429 locked
+        C->>U: Show the error message
+    end
+```
+
+### What send-otp checks
+
+```mermaid
+flowchart TD
+    A["POST /api/auth/send-otp"] --> B{"Per-IP limit<br/>10 per 15 min"}
+    B -->|over| X1["429 Too many requests"]
+    B -->|ok| C{"Per-email limit<br/>5 codes per hour"}
+    C -->|over| X2["429 Too many codes for this email"]
+    C -->|ok| D{"Valid email?"}
+    D -->|no| X3["400 Please enter a valid email"]
+    D -->|yes| E{"Email locked?<br/>5 wrong attempts"}
+    E -->|yes| X4["429 Try again after X minutes"]
+    E -->|no| F{"Code sent in the<br/>last 60 seconds?"}
+    F -->|yes| X5["429 Please wait Ns"]
+    F -->|no| G["Create code, save hash,<br/>replace any old OTP"]
+    G --> H{"Email sent?"}
+    H -->|no| X6["Delete OTP, 500 generic error"]
+    H -->|yes| OK["200 OTP sent to your email"]
+```
+
+### What verify-otp checks
+
+```mermaid
+flowchart TD
+    A["POST /api/auth/verify-otp"] --> B{"Per-IP limit<br/>20 per 15 min"}
+    B -->|over| X1["429 Too many verification attempts"]
+    B -->|ok| C{"Valid email and<br/>exactly 6 digits?"}
+    C -->|no| X2["400 validation message"]
+    C -->|yes| D{"OTP exists and<br/>not expired?"}
+    D -->|no| X3["400 Invalid or expired OTP"]
+    D -->|yes| E{"Locked?<br/>attempts >= 5"}
+    E -->|yes| X4["429 Try again after X minutes"]
+    E -->|no| F["attempts + 1 (atomic)"]
+    F --> G{"Code matches hash?"}
+    G -->|"no, attempts below 5"| X3
+    G -->|"no, 5th wrong attempt"| X5["429 locked until the OTP expires"]
+    G -->|yes| H["Delete OTP"]
+    H --> I{"User exists?"}
+    I -->|no| J["Create user<br/>isNewUser = true"]
+    I -->|yes| K["Update lastLoginAt<br/>isNewUser = false"]
+    J --> L["Sign JWT, set httpOnly cookie"]
+    K --> L
+    L --> OK["200 { user, isNewUser }"]
+```
+
+### Page navigation and route protection
+
+Every page asks `GET /api/auth/me` each time it is shown, including after the browser Back button, and redirects based on the answer.
+
+```mermaid
+flowchart TD
+    Start["/"] --> Login
+    Login["/login<br/>(guest only)"] -->|"code sent"| Verify["/verify?email=...<br/>(guest only)"]
+    Verify -->|"verified, no name yet"| Profile["/complete-profile<br/>(logged in only)"]
+    Verify -->|"verified, has name"| Dash["/dashboard<br/>(logged in only)"]
+    Profile -->|"name saved"| Dash
+    Dash -->|"log out"| Login
+
+    Login -.->|"already logged in"| Dash
+    Verify -.->|"already logged in"| Dash
+    Profile -.->|"not logged in"| Login
+    Dash -.->|"not logged in"| Login
+    Dash -.->|"name missing"| Profile
+    Profile -.->|"name already set"| Dash
+```
+
+Dotted arrows are automatic redirects.
 
 ---
 

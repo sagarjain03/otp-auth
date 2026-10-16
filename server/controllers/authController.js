@@ -10,8 +10,8 @@ const { COOKIE_NAME, cookieOptions } = require("../utils/authCookie");
 // Unexpected errors (DB down, email provider failing) are not caught here:
 // Express 5 passes them to the central error handler in middleware/errorHandler.js.
 
-const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
-const RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const RESEND_COOLDOWN_MS = 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const OTP_REGEX = /^\d{6}$/;
 // one message for "no OTP", "expired" and "wrong OTP" so attackers learn nothing

@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  /* config options here */
   async rewrites() {
     const apiUrl = process.env.API_URL || "http://localhost:5000";
     return [

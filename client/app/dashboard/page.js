@@ -22,7 +22,6 @@ export default function DashboardPage() {
     setError("");
     try {
       await api("/auth/logout", { method: "POST" });
-      // no need to clear user here: useAuth hides this page's data as soon as we leave
       router.replace("/login");
     } catch (err) {
       setError(err.message);
