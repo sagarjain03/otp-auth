@@ -26,11 +26,6 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api/auth", authRoutes);
 
-// TEMPORARY (Phase 6): proxy chain debug route, see routes/debugRoutes.js
-if (process.env.DEBUG_IP === "true") {
-  app.use("/api/debug", require("./routes/debugRoutes"));
-}
-
 app.use(notFound);
 app.use(errorHandler); // must be last
 
